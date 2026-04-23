@@ -1,4 +1,4 @@
-# Glow Nourish Chat
+# AI-Powered Fitness 
 
 An AI-powered nutrition chat application. Ask questions about calories, diets, weight loss, and healthy eating and get instant, evidence-based responses from an AI nutrition coach.
 
