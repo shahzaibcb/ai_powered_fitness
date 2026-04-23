@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-fitness-app
+  labels:
+    app: backend-fitness-app
+  namespace: fitness-ns
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-fitness-app
+  template:
+    metadata:
+      labels:
+        app: backend-fitness-app
+    spec:
+      containers:
+        - name: backend-fitness-app
+          image: us-east1-docker.pkg.dev/project-00bb5b73-6cae-4dfd-bd3/nutrition-repo/backend_fitness_app:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: OPENAI_API_KEY
+              value: "<your_api_key>"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-fitness-app-service
+  namespace: fitness-ns
+spec:
+  selector:
+    app: backend-fitness-app
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: LoadBalancer
