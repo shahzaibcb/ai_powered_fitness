@@ -7,48 +7,76 @@ An AI-powered nutrition chat application. Ask questions about calories, diets, w
 ## Architecture
 
 ```
-┌─────────────────────┐        POST /chat        ┌──────────────────────┐
-│   React Frontend    │ ───────────────────────▶  │  FastAPI Backend     │
-│   (Vite + Nginx)    │                           │  (Uvicorn + OpenAI)  │
-└─────────────────────┘                           └──────────────────────┘
-         │                                                  │
-   GKE LoadBalancer                               GKE LoadBalancer
-  (frontend-fitness-app-service)           (backend-fitness-app-service)
+                        ┌─────────────────────────────────────────┐
+                        │        nginx-ingress (single LB IP)     │
+                        │                                         │
+                        │  /chat  ──▶  backend-fitness-app-svc   │
+                        │  /*     ──▶  frontend-fitness-app-svc  │
+                        └─────────────────────────────────────────┘
+                                  │                    │
+                    ┌─────────────┘                    └──────────────┐
+                    ▼                                                  ▼
+     ┌──────────────────────┐                        ┌─────────────────────┐
+     │   FastAPI Backend    │                        │   React Frontend    │
+     │  (Uvicorn + OpenAI)  │                        │   (Vite + Nginx)    │
+     └──────────────────────┘                        └─────────────────────┘
+         (ClusterIP svc)                                 (ClusterIP svc)
 ```
 
-Both services are deployed on **Google Kubernetes Engine (GKE)** in the `fitness-ns` namespace, with images stored in **Google Artifact Registry**.
+Both services are deployed on **Google Kubernetes Engine (GKE)** in the `fitness-ns` namespace behind a single **nginx-ingress controller**, with images stored in **Google Artifact Registry**.
 
 ---
 
 ## Project Structure
 
 ```
-glow-nourish-chat/
-├── frontend/                  # React + Vite chat UI
+ai-powered-fitness/
+├── frontend/                     # React + Vite chat UI
 │   ├── src/
-│   │   ├── pages/             # Index (chat page), NotFound
 │   │   ├── components/
-│   │   │   ├── chat/          # AiAvatar, ChatMessage, InputBox, etc.
-│   │   │   └── ui/            # Reusable UI components (shadcn-style)
+│   │   │   ├── chat/             # AiAvatar, ChatMessage, InputBox, SampleQuestions, TypingIndicator
+│   │   │   ├── ui/               # Reusable shadcn/ui components
+│   │   │   └── NavLink.tsx
 │   │   ├── hooks/
-│   │   │   └── useNutritionChat.ts
-│   │   └── services/
-│   │       └── nutritionApi.ts  # Fetch client for /chat endpoint
-│   ├── .env.production        # VITE_API_BASE_URL for production build
-│   ├── Dockerfile             # Multi-stage: Node build → Nginx serve
-│   └── deployment.yaml        # GKE Deployment + LoadBalancer Service
+│   │   │   ├── useNutritionChat.ts
+│   │   │   ├── use-mobile.tsx
+│   │   │   └── use-toast.ts
+│   │   ├── lib/
+│   │   │   └── utils.ts
+│   │   ├── pages/
+│   │   │   ├── Index.tsx
+│   │   │   └── NotFound.tsx
+│   │   ├── services/
+│   │   │   └── nutritionApi.ts   # Fetch client for /chat endpoint
+│   │   └── test/
+│   │       ├── example.test.ts
+│   │       └── setup.ts
+│   ├── public/
+│   ├── .env.production           # VITE_API_BASE_URL (empty = same-origin)
+│   ├── Dockerfile                # Multi-stage: Node build → Nginx serve
+│   ├── deployment.yaml           # GKE Deployment + ClusterIP Service
+│   ├── vite.config.ts
+│   ├── vitest.config.ts
+│   └── tailwind.config.ts
 │
-└── backend/                   # FastAPI nutrition AI service
-    ├── app/
-    │   ├── main.py            # App entrypoint, CORS middleware
-    │   ├── api/routes.py      # POST /chat route
-    │   ├── core/config.py     # Settings from environment variables
-    │   ├── schemas/chat.py    # ChatRequest / ChatResponse models
-    │   └── services/
-    │       └── openai_service.py  # OpenAI chat completions
-    ├── requirements.txt
-    ├── Dockerfile
-    └── deployment.yaml        # GKE Deployment + LoadBalancer Service
+├── backend/                      # FastAPI nutrition AI service
+│   ├── app/
+│   │   ├── api/
+│   │   │   └── routes.py         # POST /chat route
+│   │   ├── core/
+│   │   │   └── config.py         # Settings from environment variables
+│   │   ├── schemas/
+│   │   │   └── chat.py           # ChatRequest / ChatResponse models
+│   │   ├── services/
+│   │   │   └── openai_service.py # OpenAI chat completions
+│   │   └── main.py               # App entrypoint, CORS middleware
+│   ├── .env.example
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── deployment.yaml           # GKE Deployment + ClusterIP Service
+│
+├── ingress.yaml                  # nginx-ingress: routes /chat → backend, /* → frontend
+└── README.md
 ```
 
 ---
@@ -64,6 +92,7 @@ glow-nourish-chat/
 | AI | OpenAI API (`gpt-4o-mini` by default) |
 | Containerization | Docker (multi-stage builds) |
 | Orchestration | Kubernetes (GKE) |
+| Ingress | nginx-ingress controller (Helm) |
 | Registry | Google Artifact Registry |
 
 ---
@@ -139,27 +168,71 @@ docker buildx build \
 
 ## Kubernetes Deployment (GKE)
 
+### 1. Install nginx-ingress controller
+
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --create-namespace
+```
+
+Wait for the controller's external IP to be assigned (~1–2 minutes):
+
+```bash
+kubectl get svc ingress-nginx-controller -n ingress-nginx --watch
+```
+
+Copy the `EXTERNAL-IP` once it appears — this is your single public entry point for the whole app. Press `Ctrl+C` once you have it.
+
+### 2. Deploy the application
+
 ```bash
 # Create the namespace
 kubectl create namespace fitness-ns
 
-# Deploy backend
-kubectl apply -f backend/deployment.yaml -n fitness-ns
+# Deploy backend and frontend
+kubectl apply -f backend/deployment.yaml
+kubectl apply -f frontend/deployment.yaml
 
-# Deploy frontend
-kubectl apply -f frontend/deployment.yaml -n fitness-ns
-
-# Check status
-kubectl get pods -n fitness-ns
-kubectl get svc -n fitness-ns
+# Apply the ingress routing rules
+kubectl apply -f ingress.yaml
 ```
 
-To update after a new image push:
+### 3. Verify everything is up
+
+```bash
+# All pods should be Running
+kubectl get pods -n fitness-ns
+
+# Services should show ClusterIP (no external IP — expected)
+kubectl get svc -n fitness-ns
+
+# Ingress should reflect the nginx-ingress EXTERNAL-IP
+kubectl get ingress -n fitness-ns
+```
+
+### 4. Test it
+
+```bash
+# Frontend
+curl http://<EXTERNAL-IP>/
+
+# Backend
+curl http://<EXTERNAL-IP>/chat -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"message": "How many calories should I eat daily?"}'
+```
+
+### 5. Update after a new image push
 
 ```bash
 kubectl rollout restart deployment/backend-fitness-app -n fitness-ns
 kubectl rollout restart deployment/frontend-fitness-app -n fitness-ns
 ```
+
+> **Adding SSL later:** Once you have a domain, point it to the nginx-ingress `EXTERNAL-IP`, install cert-manager, and add a `tls` block to `ingress.yaml`. Update `allow_origins` in `backend/app/main.py` to your domain at that point.
 
 ---
 
