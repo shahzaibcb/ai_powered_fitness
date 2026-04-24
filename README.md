@@ -4,6 +4,14 @@ An AI-powered nutrition chat application. Ask questions about calories, diets, w
 
 ---
 
+## Screenshots
+
+| Home | Chat |
+|------|------|
+| ![Home](assets/screenshot-home.png) | ![Chat](assets/screenshot-chat.png) |
+
+---
+
 ## Architecture
 
 ```
