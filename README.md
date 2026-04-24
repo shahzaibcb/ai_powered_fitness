@@ -154,7 +154,98 @@ Open [http://localhost:8080](http://localhost:8080).
 
 ---
 
-## Docker
+## GKE Deployment Guide
+
+End-to-end steps from a blank GCP project to a running application.
+
+**Prerequisites:** [gcloud CLI](https://cloud.google.com/sdk/docs/install), `kubectl`, `helm`, and `docker` must be installed locally.
+
+---
+
+### Step 1 — Authenticate and configure gcloud
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+
+# Set your project
+gcloud config set project <PROJECT_ID>
+
+# Confirm everything is set correctly
+gcloud config list
+```
+
+---
+
+### Step 2 — Enable required GCP APIs
+
+```bash
+gcloud services enable \
+  container.googleapis.com \
+  artifactregistry.googleapis.com
+```
+
+---
+
+### Step 3 — Create the GKE cluster
+
+```bash
+gcloud container clusters create fitness-cluster \
+  --zone us-east1-b \
+  --num-nodes 2 \
+  --machine-type e2-medium \
+  --disk-size 30
+```
+
+> Swap `us-east1-b` for your preferred zone. Run `gcloud compute zones list` to see all options.
+
+Once created, fetch credentials so `kubectl` points to the new cluster:
+
+```bash
+gcloud container clusters get-credentials fitness-cluster \
+  --zone us-east1-b \
+  --project <PROJECT_ID>
+
+# Confirm kubectl is connected
+kubectl get nodes
+```
+
+---
+
+### Step 4 — Create the Artifact Registry repository
+
+```bash
+gcloud artifacts repositories create nutrition-repo \
+  --repository-format=docker \
+  --location=us-east1 \
+  --description="Docker images for AI-Powered Fitness app"
+```
+
+---
+
+### Step 5 — Authenticate Docker to push images
+
+```bash
+gcloud auth configure-docker us-east1-docker.pkg.dev
+```
+
+Grant the GKE node service account read access to the registry so pods can pull images:
+
+```bash
+# Get the node service account email
+gcloud iam service-accounts list
+
+# Grant Artifact Registry reader role
+gcloud projects add-iam-policy-binding <PROJECT_ID> \
+  --member="serviceAccount:<NODE_SA_EMAIL>" \
+  --role="roles/artifactregistry.reader"
+```
+
+> The node SA email typically looks like `<PROJECT_NUMBER>-compute@developer.gserviceaccount.com`. You can also find it in the GCP console under IAM.
+
+---
+
+### Step 6 — Build and push Docker images
 
 Both images must be built for `linux/amd64` when building on Apple Silicon:
 
@@ -162,39 +253,47 @@ Both images must be built for `linux/amd64` when building on Apple Silicon:
 # Backend
 docker buildx build \
   --platform linux/amd64 \
-  -t us-east1-docker.pkg.dev/<project>/nutrition-repo/backend_fitness_app:latest \
+  -t us-east1-docker.pkg.dev/<PROJECT_ID>/nutrition-repo/backend_fitness_app:latest \
   --push ./backend
 
 # Frontend
 docker buildx build \
   --platform linux/amd64 \
-  -t us-east1-docker.pkg.dev/<project>/nutrition-repo/frontend_fitness_app:latest \
+  -t us-east1-docker.pkg.dev/<PROJECT_ID>/nutrition-repo/frontend_fitness_app:latest \
   --push ./frontend
+```
+
+Verify images are in the registry:
+
+```bash
+gcloud artifacts docker images list \
+  us-east1-docker.pkg.dev/<PROJECT_ID>/nutrition-repo
 ```
 
 ---
 
-## Kubernetes Deployment (GKE)
-
-### 1. Install nginx-ingress controller
+### Step 7 — Install nginx-ingress controller
 
 ```bash
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm repo update
+
 helm install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx \
   --create-namespace
 ```
 
-Wait for the controller's external IP to be assigned (~1–2 minutes):
+Wait for the external IP to be assigned (~1–2 minutes):
 
 ```bash
 kubectl get svc ingress-nginx-controller -n ingress-nginx --watch
 ```
 
-Copy the `EXTERNAL-IP` once it appears — this is your single public entry point for the whole app. Press `Ctrl+C` once you have it.
+Copy the `EXTERNAL-IP` once it appears — this is your single public entry point. Press `Ctrl+C` once you have it.
 
-### 2. Deploy the application
+---
+
+### Step 8 — Deploy the application
 
 ```bash
 # Create the namespace
@@ -208,7 +307,9 @@ kubectl apply -f frontend/deployment.yaml
 kubectl apply -f ingress.yaml
 ```
 
-### 3. Verify everything is up
+---
+
+### Step 9 — Verify everything is up
 
 ```bash
 # All pods should be Running
@@ -217,11 +318,13 @@ kubectl get pods -n fitness-ns
 # Services should show ClusterIP (no external IP — expected)
 kubectl get svc -n fitness-ns
 
-# Ingress should reflect the nginx-ingress EXTERNAL-IP
+# Ingress should show the nginx-ingress EXTERNAL-IP
 kubectl get ingress -n fitness-ns
 ```
 
-### 4. Test it
+---
+
+### Step 10 — Test it
 
 ```bash
 # Frontend
@@ -233,12 +336,18 @@ curl http://<EXTERNAL-IP>/chat -X POST \
   -d '{"message": "How many calories should I eat daily?"}'
 ```
 
-### 5. Update after a new image push
+Open `http://<EXTERNAL-IP>` in your browser — the app is live.
+
+---
+
+### Updating after a new image push
 
 ```bash
 kubectl rollout restart deployment/backend-fitness-app -n fitness-ns
 kubectl rollout restart deployment/frontend-fitness-app -n fitness-ns
 ```
+
+---
 
 > **Adding SSL later:** Once you have a domain, point it to the nginx-ingress `EXTERNAL-IP`, install cert-manager, and add a `tls` block to `ingress.yaml`. Update `allow_origins` in `backend/app/main.py` to your domain at that point.
 
